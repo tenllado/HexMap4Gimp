@@ -131,7 +131,7 @@ class HexGrid:
         return self.img_w, self.img_h 
 
     def draw(self, img):
-        prev_brush = Gimp.context_get_brush()
+        Gimp.context_push()
         Gimp.context_set_brush(self.blank_hex_brush)
         terrain_layer = img.get_layer_by_name("Terrain")
         for r in range(self.rows):
@@ -139,7 +139,6 @@ class HexGrid:
                 x, y = self.hex_center(c, r)
                 Gimp.pencil(terrain_layer, [x, y])
 
-        prev_fcolor = Gimp.context_get_foreground()
         grid_color = Gegl.Color.new("#969696")
         Gimp.context_set_foreground(grid_color)
         terrain_blank_color = Gegl.Color.new("#ffffff")
@@ -151,18 +150,16 @@ class HexGrid:
         grid_layer.set_mode(Gimp.LayerMode.MULTIPLY)
         grid_layer.set_opacity(75)
         grid_layer.edit_fill(Gimp.FillType.FOREGROUND)
-        Gimp.context_set_foreground(prev_fcolor)
         Gimp.Selection.none(img)
-        if (prev_brush != None):
-            Gimp.context_set_brush(prev_brush)
+        Gimp.context_pop()
 
     def draw_labels(self, img, x0, y0, x1, y1, ix, iy, separator):
         def make_label(coord_separator, x, y):
             return f"{x:02d}{coord_separator}{y:02d}"
 
+        Gimp.context_push()
         font = Gimp.Font.get_by_name("Sans-serif")
         font_size = 7
-        foreground_color = Gimp.context_get_foreground()
         labels_color = Gegl.Color.new("#646464")
         Gimp.context_set_foreground(labels_color) # for 100, 100, 100
         for r in range(y0, y1 + 1):
@@ -178,67 +175,82 @@ class HexGrid:
                 ycoord = cy - self.hex_h // 2 - 1
                 text_layer.set_offsets(cx - text_layer.get_width() // 2, ycoord)
                 img.merge_down(text_layer, Gimp.MergeType.EXPAND_AS_NECESSARY)
-        Gimp.context_set_foreground(foreground_color)
+        Gimp.context_pop()
 
     def set_gimp_grid(self, img):
         img.grid_set_spacing(self.dx, self.dy)
         img.grid_set_offset(self.origin_center_dx, 0)
         img.grid_set_style(Gimp.GridStyle.DOTS)
 
-    def draw_large_grid(self, img, scale, ccol, crow):
-        hex_h = (self.hex_h + 1) * scale
-        hex_w = (self.hex_w + 2) * scale + scale / 2
+    def lgrid_setup(self, scale, ccol, crow):
+        self.lgrid_scale = scale
+        self.lgrid_ccol = ccol
+        self.lgrid_crow = crow
+
+    def lgrid_hex_dims(self):
+        hex_h = (self.hex_h + 1) * self.lgrid_scale
+        hex_w = (self.hex_w + 2) * self.lgrid_scale + self.lgrid_scale / 2
         hex_s = hex_w / 2
+        return hex_s, hex_h, hex_w
 
-        def draw_hex(layer, cx, cy):
-            # hex vertices, anti clock wise, from bottom left
-            verts = [
-                (cx - hex_s/2, cy - hex_h/2),
-                (cx + hex_s/2, cy - hex_h/2),
-                (cx + hex_s  , cy            ),
-                (cx + hex_s/2, cy + hex_h/2),
-                (cx - hex_s/2, cy + hex_h/2),
-                (cx - hex_s  , cy            ),
-            ]
+    def lgrid_hex_center(self, c, r):
+        hex_c = self.lgrid_ccol +  c*self.lgrid_scale
+        hex_r = self.lgrid_crow + r*self.lgrid_scale
+        if c % 2 != 0:
+            hex_r = hex_r + self.lgrid_scale // 2
+        return self.hex_center(hex_c, hex_r)
 
-            # Draw sides
-            for i in range(6):
-                v1 = verts[i]
-                v2 = verts[(i + 1) % 6]
-                side = [v1[0], v1[1], v2[0], v2[1]]
-                Gimp.pencil(layer, side)
+    def lgrid_row_range(self):
+        crow = self.lgrid_crow
+        scale = self.lgrid_scale
+        rows = 2 + max(crow // scale , (self.rows - crow) // scale)
+        return -rows, rows
 
-        def hex_center(c, r):
-            hex_c = ccol +  c*scale
-            hex_r = crow + r*scale
-            if c % 2 != 0:
-                hex_r = hex_r + scale // 2
-            return self.hex_center(hex_c, hex_r)
+    def lgrid_col_range(self):
+        ccol = self.lgrid_ccol
+        scale = self.lgrid_scale
+        cols = 2 + max(ccol // scale , (self.cols - ccol) // scale)
+        return -cols, cols
 
-        prev_brush = Gimp.context_get_brush()
-        prev_brush_size = Gimp.context_get_brush_size()
-
+    def draw_large_grid(self, img):
+        Gimp.context_push()
         pixel_brush = Gimp.Brush.get_by_name("1. Pixel")
         Gimp.context_set_brush(pixel_brush)
         Gimp.context_set_brush_size(1)
-        prev_fcolor = Gimp.context_get_foreground()
         grid_color = Gegl.Color.new("#969696")
         Gimp.context_set_foreground(grid_color)
         layer = img.get_layer_by_name("LargeGrid")
         layer.set_mode(Gimp.LayerMode.MULTIPLY)
         layer.set_opacity(75)
 
+        hex_s, hex_h, hex_w = self.lgrid_hex_dims()
+        # Hex vertices offsets from the center of the hex
+        vert_offsets = [
+            (-hex_s/2, -hex_h/2),
+            ( hex_s/2, -hex_h/2),
+            ( hex_s  ,     0   ),
+            ( hex_s/2,  hex_h/2),
+            (-hex_s/2,  hex_h/2),
+            (-hex_s  ,     0   ),
+        ]
+
         # Draw the grid, centered on column ccol and row crow
-        rows = 2 + max(crow // scale , (self.rows - crow) // scale)
-        cols = 2 + max(ccol // scale , (self.cols - ccol) // scale)
-        for r in range(-rows, rows):
-            for c in range(-cols, cols):
-                cx, cy = hex_center(c, r)
-                draw_hex(layer, cx, cy)
-        Gimp.context_set_brush_size(prev_brush_size)
-        Gimp.context_set_foreground(prev_fcolor)
-        if (prev_brush != None):
-            Gimp.context_set_brush(prev_brush)
+        col_min, col_max = self.lgrid_col_range()
+        row_min, row_max = self.lgrid_row_range()
+        for c in range(col_min, col_max):
+            for r in range(row_min, row_max):
+                cx, cy = self.lgrid_hex_center(c, r)
+                sides = [0, 1, 2] # always drawn
+                if r == row_min:
+                    sides.append(3) # upper side only on first row
+                if c == col_min:
+                    sides.extend([4,5]) # left sides only on first column
+                for i in sides:
+                    v1 = vert_offsets[i]
+                    v2 = vert_offsets[(i + 1) % 6]
+                    side = [cx + v1[0], cy + v1[1], cx + v2[0], cy + v2[1]]
+                    Gimp.pencil(layer, side)
+        Gimp.context_pop()
 
 class HexMapDialog(Gtk.Window):
     def __init__(self, title):
@@ -595,7 +607,8 @@ class HexMap4Gimp(Gimp.PlugIn):
             lgrid_crow = dialog.spin_lgrid_crow.get_value_as_int()
             lgrid_ccol = dialog.spin_lgrid_ccol.get_value_as_int()
             lgrid_scale = dialog.spin_scale.get_value_as_int()
-            hexgrid.draw_large_grid(img, lgrid_scale, lgrid_ccol, lgrid_crow)
+            hexgrid.lgrid_setup(lgrid_scale, lgrid_ccol, lgrid_crow)
+            hexgrid.draw_large_grid(img)
         else:
             img.remove_layer(layers["LargeGrid"])
 
